@@ -1,566 +1,961 @@
+"""
+CTA策略上下文模块
+
+本模块提供了CTA（Commodity Trading Advisor）策略的上下文类（CtaContext），是策略可以直接访问的唯一对象。
+策略通过Context对象调用框架提供的所有接口，包括数据查询、下单、持仓管理等。
+CTA策略主要用于中低频交易，通常基于K线数据进行决策，支持条件单、图表指标等功能。
+
+主要功能：
+1. 时间接口：获取当前日期、时间、交易日等
+2. 数据接口：获取K线、Tick、持仓、资金等数据
+3. 交易接口：设置仓位、多空进场出场、条件单等
+4. 工具接口：日志输出、用户数据存储、品种信息查询、图表指标等
+"""
+
+# 导入品种信息类
 from wtpy.ProductMgr import ProductInfo
+# 导入交易时段信息类
 from wtpy.SessionMgr import SessionInfo
+# 导入合约信息类
 from wtpy.ContractMgr import ContractInfo
+# 导入数据定义模块中的K线和Tick数据结构
 from wtpy.WtDataDefs import WtNpTicks, WtNpKline
+# 导入核心数据结构定义
 from wtpy.WtCoreDefs import WTSBarStruct, WTSTickStruct
+# 导入ctypes模块的POINTER类型，用于处理C结构体指针
 from ctypes import POINTER
 
 class CtaContext:
-    '''
-    Context是策略可以直接访问的唯一对象
-    策略所有的接口都通过Context对象调用
-    Context类包括以下几类接口: 
-    1、时间接口（日期、时间等）, 接口格式如: stra_xxx
-    2、数据接口（K线、财务等）, 接口格式如: stra_xxx
-    3、下单接口（设置目标仓位、直接下单等）, 接口格式如: stra_xxx
-    '''
+    """
+    CTA策略上下文类
+    
+    Context是策略可以直接访问的唯一对象，策略所有的接口都通过Context对象调用。
+    Context类包括以下几类接口：
+    1、时间接口（日期、时间等），接口格式如：stra_xxx
+    2、数据接口（K线、财务等），接口格式如：stra_xxx
+    3、下单接口（设置目标仓位、直接下单等），接口格式如：stra_xxx
+    """
 
     def __init__(self, id:int, stra, wrapper, engine):
-        self.__stra_info__ = stra   #策略对象, 对象基类BaseStrategy.py
-        self.__wrapper__ = wrapper  #底层接口转换器
-        self.__id__ = id            #策略ID
-        self.__bar_cache__ = dict() #K线缓存
-        self.__tick_cache__ = dict()    #tTick缓存, 每次都重新去拉取, 这个只做中转用, 不在python里维护副本
-        self.__sname__ = stra.name()    
-        self.__engine__ = engine          #交易环境
+        """
+        构造函数
+        
+        初始化CTA策略上下文，设置策略对象、底层包装器、引擎等引用。
+        
+        @id: 策略ID，由引擎分配的唯一标识符
+        @stra: 策略对象，继承自BaseCtaStrategy的策略实例
+        @wrapper: 底层接口转换器，用于调用C++底层接口
+        @engine: 交易引擎对象，提供引擎级别的功能
+        """
+        # 策略对象引用，用于调用策略的回调函数
+        self.__stra_info__ = stra
+        # 底层接口转换器，用于调用C++底层接口
+        self.__wrapper__ = wrapper
+        # 策略ID，由引擎分配的唯一标识符
+        self.__id__ = id
+        # K线数据缓存字典，键为"合约代码#周期"，值为WtNpKline对象
+        self.__bar_cache__ = dict()
+        # Tick数据缓存字典，键为合约代码，值为WtNpTicks对象
+        # 注意：Tick缓存每次都重新拉取，这个只做中转用，不在python里维护副本
+        self.__tick_cache__ = dict()
+        # 策略名称，从策略对象获取
+        self.__sname__ = stra.name()
+        # 交易引擎对象引用，提供引擎级别的功能
+        self.__engine__ = engine
+        # 持仓缓存字典，键为合约代码，值为持仓数量
         self.__pos_cache__ = None
 
+        # 设置接口函数别名，提供更简洁的调用方式
         self.__alias__()
 
     @property
     def id(self):
+        """
+        获取策略ID属性
+        
+        @return: 返回策略ID
+        """
         return self.__id__
     
     @property
     def is_backtest(self):
+        """
+        获取是否为回测模式属性
+        
+        @return: 返回是否为回测模式，True表示回测，False表示实盘
+        """
         return self.__engine__.is_backtest
     
     def __alias__(self):
-        '''
-        接口函数别名
-        '''
+        """
+        设置接口函数别名
+        
+        为常用的接口函数设置简短的别名，方便策略调用。
+        例如：context.get_bars() 等价于 context.stra_get_bars()
+        """
+        # 设置多仓进场的别名
         self.enter_long = self.stra_enter_long
+        # 设置空仓进场的别名
         self.enter_short = self.stra_enter_short
+        # 设置多仓出场的别名
         self.exit_long = self.stra_exit_long
+        # 设置空仓出场的别名
         self.exit_short = self.stra_exit_short
+        # 设置获取全部持仓的别名
         self.get_all_position = self.stra_get_all_position
+        # 设置获取K线的别名
         self.get_bars = self.stra_get_bars
+        # 设置获取品种信息的别名
         self.get_comminfo = self.stra_get_comminfo
+        # 设置获取日期的别名
         self.get_date = self.stra_get_date
+        # 设置获取当日价格的别名
         self.get_day_price = self.stra_get_day_price
+        # 设置获取持仓成本的别名
         self.get_detail_cost = self.stra_get_detail_cost
+        # 设置获取持仓进场时间的别名
         self.get_detail_entertime = self.stra_get_detail_entertime
+        # 设置获取持仓盈亏的别名
         self.get_detail_profit = self.stra_get_detail_profit
+        # 设置获取首次进场时间的别名
         self.get_first_entertime = self.stra_get_first_entrytime
+        # 设置获取资金数据的别名
         self.get_fund_data = self.stra_get_fund_data
+        # 设置获取最后进场标记的别名
         self.get_last_entrytag = self.stra_get_last_entrytag
+        # 设置获取最后进场时间的别名
         self.get_last_entrytime = self.stra_get_last_entrytime
+        # 设置获取最后出场时间的别名
         self.get_last_exittime = self.stra_get_last_exittime
+        # 设置获取持仓的别名
         self.get_position = self.stra_get_position
+        # 设置获取持仓均价的别名
         self.get_position_avgpx = self.stra_get_position_avgpx
+        # 设置获取持仓盈亏的别名
         self.get_position_profit = self.stra_get_position_profit
+        # 设置获取最新价格的别名
         self.get_price = self.stra_get_price
+        # 设置获取原始合约代码的别名
         self.get_rawcode = self.stra_get_rawcode
+        # 设置获取交易时段信息的别名
         self.get_sessinfo = self.stra_get_sessinfo
+        # 设置获取交易日的别名
         self.get_tdate = self.stra_get_tdate
+        # 设置获取Tick数据的别名
         self.get_ticks = self.stra_get_ticks
+        # 设置获取时间的别名
         self.get_time = self.stra_get_time
+        # 设置输出日志的别名
         self.log_text = self.stra_log_text
+        # 设置准备K线的别名
         self.prepare_bars = self.stra_prepare_bars
+        # 设置设置仓位的别名
         self.set_position = self.stra_set_position
+        # 设置订阅Tick的别名
         self.sub_ticks = self.stra_sub_ticks
+        # 设置订阅K线事件的别名
         self.sub_bar_events = self.stra_sub_bar_events
         pass
 
     def write_indicator(self, tag:str, time:int, data:dict):
-        '''
+        """
         输出指标数据
-        @tag    指标标签
-        @time   输出时间
-        @data   输出的指标数据, dict类型, 会转成json以后保存
-        '''
+        
+        将策略计算的指标数据输出到外部存储或显示系统。
+        指标数据会被转换为JSON格式保存。
+        
+        @tag: 指标标签，用于区分不同的指标，例如：m5、d等
+        @time: 输出时间，格式如yyyymmddHHMM
+        @data: 输出的指标数据，dict类型，会转成json以后保存
+        """
+        # 调用引擎的指标输出方法，传入策略名称、标签、时间和数据
         self.__engine__.write_indicator(self.__stra_info__.name(), tag, time, data)
 
     def on_init(self):
-        '''
-        初始化, 一般用于系统启动的时候
-        '''
+        """
+        初始化回调函数（由底层调用）
+        
+        在策略启动时调用，一般用于系统启动的时候。
+        此函数会调用策略对象的on_init方法。
+        """
+        # 调用策略对象的初始化方法，传入self作为上下文
         self.__stra_info__.on_init(self)
 
     def on_session_begin(self, curTDate:int):
-        '''
-        交易日开始事件
-
-        @curTDate   交易日, 格式为20210220
-        '''
+        """
+        交易日开始事件回调函数（由底层调用）
+        
+        在每个交易日开始时调用，通知策略新的交易日开始。
+        
+        @curTDate: 当前交易日，格式为yyyymmdd，例如：20210220
+        """
+        # 调用策略对象的交易日开始方法，传入self和交易日
         self.__stra_info__.on_session_begin(self, curTDate)
 
     def on_session_end(self, curTDate:int):
-        '''
-        交易日结束事件
-
-        @curTDate   交易日, 格式为20210220
-        '''
+        """
+        交易日结束事件回调函数（由底层调用）
+        
+        在每个交易日结束时调用，通知策略当前交易日结束。
+        
+        @curTDate: 当前交易日，格式为yyyymmdd，例如：20210220
+        """
+        # 调用策略对象的交易日结束方法，传入self和交易日
         self.__stra_info__.on_session_end(self, curTDate)
 
     def on_backtest_end(self):
-        '''
-        回测结束事件
-        '''
+        """
+        回测结束事件回调函数（由底层调用）
+        
+        在回测结束时调用，通知策略回测已完成。
+        """
+        # 调用策略对象的回测结束方法，传入self作为上下文
         self.__stra_info__.on_backtest_end(self)
 
     def on_getticks(self, stdCode:str, newTicks:WtNpTicks):
+        """
+        Tick数据获取回调函数（由底层调用）
+        
+        当底层返回Tick数据时，会调用此函数将数据存储到缓存中。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        @newTicks: Tick数据对象，包含多个Tick数据
+        """
+        # 使用合约代码作为键
         key = stdCode
 
+        # 将Tick数据存储到缓存字典中
         self.__tick_cache__[key] = newTicks
 
     def on_getpositions(self, stdCode:str, qty:float, frozen:float):
+        """
+        持仓数据获取回调函数（由底层调用）
+        
+        当底层返回持仓数据时，会调用此函数将数据存储到缓存中。
+        
+        @stdCode: 合约代码，空字符串表示全部持仓
+        @qty: 持仓数量，正数表示多头，负数表示空头
+        @frozen: 冻结数量，暂时未使用
+        """
+        # 如果合约代码为空，直接返回
         if len(stdCode) == 0:
             return
+        # 将持仓数量存储到缓存字典中
         self.__pos_cache__[stdCode] = qty
 
     def on_getbars(self, stdCode:str, period:str, npBars:WtNpKline):
+        """
+        K线数据获取回调函数（由底层调用）
+        
+        当底层返回K线数据时，会调用此函数将数据存储到缓存中。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        @period: K线周期，例如：m5、d
+        @npBars: K线数据对象，包含多个K线数据
+        """
+        # 构造缓存键：合约代码#周期
         key = "%s#%s" % (stdCode, period)
 
+        # 将K线数据存储到缓存字典中
         self.__bar_cache__[key] = npBars
 
     def on_condition_triggered(self, stdCode:str, target:float, price:float, usertag:str):
+        """
+        条件单触发回调函数（由底层调用）
+        
+        当设置的条件单被触发时，底层会调用此函数。
+        此函数会调用策略对象的on_condition_triggered方法，通知策略条件单已触发。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        @target: 触发后的最终目标仓位，正数表示多头，负数表示空头
+        @price: 触发价格，即条件单被触发时的价格
+        @usertag: 用户标记，用于标识该条件单的来源或用途
+        """
+        # 调用策略对象的条件单触发方法
         self.__stra_info__.on_condition_triggered(self,stdCode, target, price, usertag)
 
     def on_tick(self, stdCode:str, newTick:POINTER(WTSTickStruct)):
-        '''
-        tick回调事件响应
-        '''
+        """
+        Tick数据回调函数（由底层调用）
+        
+        当订阅的合约有新的Tick数据时，底层会调用此函数。
+        此函数会将C结构体转换为Python字典，然后调用策略对象的on_tick方法。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        @newTick: Tick数据指针，指向WTSTickStruct结构体
+        """
+        # 调用策略对象的on_tick方法，将C结构体转换为字典
         self.__stra_info__.on_tick(self, stdCode, newTick.contents.to_dict)
 
     def on_bar(self, stdCode:str, period:str, newBar:POINTER(WTSBarStruct)):
-        '''
-        K线闭合事件响应
-        @stdCode   品种代码
-        @period     K线基础周期
-        @times      周期倍数
-        @newBar     最新K线
-        '''        
+        """
+        K线闭合事件响应函数（由底层调用）
+        
+        当订阅的K线闭合时，底层会调用此函数。
+        此函数会将C结构体转换为Python字典，然后调用策略对象的on_bar方法。
+        
+        @stdCode: 品种代码，例如：SHFE.rb.2305
+        @period: K线基础周期，例如：m5、d
+        @newBar: 最新K线数据指针，指向WTSBarStruct结构体
+        """        
+        # 构造缓存键：合约代码#周期
         key = "%s#%s" % (stdCode, period)
 
+        # 如果该键不在缓存中，说明策略未订阅此K线，直接返回
         if key not in self.__bar_cache__:
             return
         
         try:
+            # 调用策略对象的on_bar方法，将C结构体转换为字典
             self.__stra_info__.on_bar(self, stdCode, period, newBar.contents.to_dict)
         except ValueError as ve:
+            # 如果发生值错误，打印错误信息
             print(ve)
         else:
+            # 如果没有异常，正常返回
             return
 
     def on_calculate(self):
-        '''
-        策略重算回调
-        主K线闭合才会触发该回调接口
-        '''
+        """
+        策略重算回调函数（由底层调用）
+        
+        在主K线闭合时调用，通知策略进行核心计算。
+        只有主K线闭合才会触发该回调接口。
+        此函数会调用策略对象的on_calculate方法。
+        """
+        # 调用策略对象的计算方法，传入self作为上下文
         self.__stra_info__.on_calculate(self)
 
     def on_calculate_done(self):
-        '''
-        重算结束回调
-        只有在异步模式下才会触发, 目前主要针对强化学习的训练场景, 需要在重算以后将智能体的信号传递给底层
-        '''
+        """
+        重算结束回调函数（由底层调用）
+        
+        在策略计算完成后调用，主要用于异步场景。
+        只有在异步模式下才会触发，目前主要针对强化学习的训练场景，需要在重算以后将智能体的信号传递给底层。
+        此函数会调用策略对象的on_calculate_done方法。
+        """
+        # 调用策略对象的计算完成方法，传入self作为上下文
         self.__stra_info__.on_calculate_done(self)
 
     def stra_log_text(self, message:str, level:int = 1):
-        '''
+        """
         输出日志
-        @level      日志级别, 0-debug, 1-info, 2-warn, 3-error
-        @message    消息内容, 最大242字符
-        '''
+        
+        向日志系统输出一条日志消息。
+        
+        @level: 日志级别，0-debug，1-info，2-warn，3-error，默认为1（info）
+        @message: 消息内容，最大242字符，超出部分会被截断
+        """
+        # 调用底层包装器的日志输出方法，传入策略ID、日志级别和消息内容（截断到242字符）
         self.__wrapper__.cta_log_text(self.__id__, level, message[:242])
 
     def stra_get_tdate(self) -> int:
-        '''
+        """
         获取当前交易日
-        @return int, 格式如20180513
-        '''
+        
+        获取当前交易日，用于判断交易日等。
+        
+        @return: 返回当前交易日，格式如20180513（yyyymmdd）
+        """
+        # 调用底层包装器获取交易日
         return self.__wrapper__.cta_get_tdate()
         
     def stra_get_date(self) -> int:
-        '''
+        """
         获取当前日期
-        @return int, 格式如20180513
-        '''
+        
+        获取当前日期，用于判断日期等。
+        
+        @return: 返回当前日期，格式如20180513（yyyymmdd）
+        """
+        # 调用底层包装器获取日期
         return self.__wrapper__.cta_get_date()
 
     def stra_get_position_avgpx(self, stdCode:str = "") -> float:
-        '''
+        """
         获取当前持仓均价
-        @stdCode   合约代码
-        @return 持仓均价
-        '''
+        
+        获取指定合约的持仓均价，如果stdCode为空则返回全部持仓的加权平均价。
+        
+        @stdCode: 合约代码，为空时返回全部持仓的加权平均价
+        @return: 持仓均价，如果没有持仓则返回0
+        """
+        # 调用底层包装器获取持仓均价
         return self.__wrapper__.cta_get_position_avgpx(self.__id__, stdCode)
 
     def stra_get_position_profit(self, stdCode:str = "") -> float:
-        '''
+        """
         获取持仓浮动盈亏
-        @stdCode   合约代码, 为None时读取全部品种的浮动盈亏
-        @return 浮动盈亏
-        '''
+        
+        获取指定合约的持仓浮动盈亏，如果stdCode为空则返回全部持仓的总浮动盈亏。
+        
+        @stdCode: 合约代码，为空时返回全部品种的浮动盈亏
+        @return: 浮动盈亏，正数表示盈利，负数表示亏损
+        """
+        # 调用底层包装器获取持仓浮动盈亏
         return self.__wrapper__.cta_get_position_profit(self.__id__, stdCode)
 
     def stra_get_fund_data(self, flag:int = 0) -> float:
-        '''
+        """
         获取资金数据
-        @flag   0-动态权益, 1-总平仓盈亏, 2-总浮动盈亏, 3-总手续费
-        @return 资金数据
-        '''
+        
+        获取策略的资金相关信息。
+        
+        @flag: 资金数据类型标志，0-动态权益，1-总平仓盈亏，2-总浮动盈亏，3-总手续费，默认为0
+        @return: 资金数据，根据flag返回对应的资金信息
+        """
+        # 调用底层包装器获取资金数据
         return self.__wrapper__.cta_get_fund_data(self.__id__, flag)
 
     def stra_get_time(self) -> int:
-        '''
-        获取当前时间, 24小时制, 精确到分
-        @return int, 格式如1231
-        '''
+        """
+        获取当前时间
+        
+        获取当前时间，24小时制，精确到分钟。
+        
+        @return: 返回当前时间，格式如1231（HHMM）
+        """
+        # 调用底层包装器获取时间
         return self.__wrapper__.cta_get_time()
 
     def stra_get_price(self, stdCode:str) -> float:
-        '''
-        获取最新价格, 一般在获取了K线以后再获取该价格
-        @return 最新价格
-        '''
+        """
+        获取最新价格
+        
+        获取指定合约的最新价格，一般在获取了K线以后再获取该价格。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        @return: 最新价格，如果合约不存在则返回0
+        """
+        # 调用底层包装器获取最新价格
         return self.__wrapper__.cta_get_price(stdCode)
 
     def stra_get_day_price(self, stdCode:str, flag:int = 0) -> float:
-        '''
+        """
         获取当日价格
-        @flag       价格标记, 0-开盘价, 1-最高价, 2-最低价, 3-最新价
-        @return 最新价格
-        '''
+        
+        获取指定合约当日的各种价格信息。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        @flag: 价格标记，0-开盘价，1-最高价，2-最低价，3-最新价，默认为0
+        @return: 对应的价格，根据flag返回不同的价格
+        """
+        # 调用底层包装器获取当日价格
         return self.__wrapper__.cta_get_day_price(stdCode, flag)
 
     def stra_get_all_position(self) -> dict:
-        '''
+        """
         获取全部持仓
-        '''
-        self.__pos_cache__ = dict() #
+        
+        获取策略的所有持仓信息，返回一个字典，键为合约代码，值为持仓数量。
+        
+        @return: 持仓字典，键为合约代码，值为持仓数量（正数表示多头，负数表示空头）
+        """
+        # 初始化持仓缓存字典
+        self.__pos_cache__ = dict()
+        # 调用底层包装器获取全部持仓，数据会通过on_getpositions回调存储到缓存中
         self.__wrapper__.cta_get_all_position(self.__id__)
+        # 返回持仓缓存字典
         return self.__pos_cache__
 
     def stra_prepare_bars(self, stdCode:str, period:str, count:int, isMain:bool = False):
-        '''
-        准备历史K线
-        一般在on_init调用
-        @stdCode   合约代码
-        @period K线周期, 如m3/d7
-        @count  要拉取的K线条数
-        @isMain 是否是主K线
-        '''
+        """
+        准备历史K线数据
+        
+        在策略初始化时调用，用于预先加载历史K线数据到缓存中。
+        一般在on_init中调用，确保后续获取K线时数据已经准备好。
+        如果缓存中已有数据，则直接返回，避免重复加载。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        @period: K线周期，例如：m3（3分钟）、d7（7日）
+        @count: 要拉取的K线条数，从最新数据往前取
+        @isMain: 是否是主K线，主K线闭合时会触发on_calculate回调，默认为False
+        """
+        # 构造缓存键：合约代码#周期
         key = "%s#%s" % (stdCode, period)
+        # 如果缓存中已有数据，直接返回（这里做一个数据长度处理）
         if key in self.__bar_cache__:
-            #这里做一个数据长度处理
             return self.__bar_cache__[key]
         
+        # 调用底层包装器获取K线数据，数据会通过on_getbars回调存储到缓存中
         self.__wrapper__.cta_get_bars(self.__id__, stdCode, period, count, isMain)
 
     def stra_get_bars(self, stdCode:str, period:str, count:int, isMain:bool = False) -> WtNpKline:
-        '''
-        获取历史K线
-        @stdCode   合约代码
-        @period K线周期, 如m3/d7
-        @count  要拉取的K线条数
-        @isMain 是否是主K线
-        '''
+        """
+        获取历史K线数据
+        
+        获取指定合约和周期的历史K线数据。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        @period: K线周期，例如：m3（3分钟）、d7（7日）
+        @count: 要拉取的K线条数，从最新数据往前取
+        @isMain: 是否是主K线，主K线闭合时会触发on_calculate回调，默认为False
+        @return: 返回WtNpKline对象，包含K线数据，如果获取失败则返回None
+        """
+        # 构造缓存键：合约代码#周期
         key = "%s#%s" % (stdCode, period)
 
+        # 调用底层包装器获取K线数据，返回数据条数
         cnt =  self.__wrapper__.cta_get_bars(self.__id__, stdCode, period, count, isMain)
+        # 如果数据条数为0，返回None
         if cnt == 0:
             return None
 
+        # 从缓存中获取K线数据对象
         npBars = self.__bar_cache__[key]
 
+        # 返回K线数据对象
         return npBars
 
     def stra_get_ticks(self, stdCode:str, count:int) -> WtNpTicks:
-        '''
-        获取tick数据
-        @stdCode   合约代码
-        @count  要拉取的tick数量
-        '''
+        """
+        获取Tick数据
+        
+        获取指定合约的历史Tick数据。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        @count: 要拉取的Tick数量，从最新数据往前取
+        @return: 返回WtNpTicks对象，包含Tick数据，如果获取失败则返回None
+        """
+        # 调用底层包装器获取Tick数据，返回数据条数
         cnt = self.__wrapper__.cta_get_ticks(self.__id__, stdCode, count)
+        # 如果数据条数为0，返回None
         if cnt == 0:
             return None
         
+        # 从缓存中获取Tick数据对象
         np_ticks = self.__tick_cache__[stdCode]
+        # 返回Tick数据对象
         return np_ticks
 
     def stra_sub_ticks(self, stdCode:str):
-        '''
+        """
         订阅实时行情
-        获取K线和tick数据的时候会自动订阅, 这里只需要订阅额外要检测的品种即可
-        @stdCode   合约代码
-        '''
+        
+        订阅指定合约的实时Tick行情数据。
+        注意：获取K线和tick数据的时候会自动订阅，这里只需要订阅额外要检测的品种即可。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        """
+        # 调用底层包装器订阅Tick行情
         self.__wrapper__.cta_sub_ticks(self.__id__, stdCode)
 
     def stra_sub_bar_events(self, stdCode:str, perriod:str):
-        '''
-        订阅K线事件, 订阅以后on_bar会触发, 一般在on_init调用
-        @stdCode    合约代码
-        @period     K线周期, 如m3/d7
-        '''
+        """
+        订阅K线事件
+        
+        订阅指定合约和周期的K线闭合事件。
+        订阅以后，当K线闭合时会触发策略的on_bar回调。
+        一般在on_init中调用。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        @perriod: K线周期，例如：m3（3分钟）、d7（7日）
+        """
+        # 调用底层包装器订阅K线事件
         self.__wrapper__.cta_sub_bar_events(self.__id__, stdCode, perriod)
 
     def stra_get_position(self, stdCode:str, bonlyvalid:bool = False, usertag:str = "") -> float:
-        '''
+        """
         读取当前仓位
-        @stdCode       合约/股票代码
-        @bonlyvalid 只读可用持仓, 默认为False
-        @usertag    入场标记
-        @return     正为多仓, 负为空仓
-        '''
+        
+        获取指定合约的当前持仓数量。
+        
+        @stdCode: 合约/股票代码，例如：SHFE.rb.2305
+        @bonlyvalid: 是否只读取可用持仓，默认为False（读取全部持仓）
+        @usertag: 入场标记，用于区分不同标记的持仓，默认为空字符串
+        @return: 持仓数量，正数表示多仓，负数表示空仓，如果没有持仓则返回0
+        """
+        # 调用底层包装器获取持仓
         return self.__wrapper__.cta_get_position(self.__id__, stdCode, bonlyvalid, usertag)
 
     def stra_set_position(self, stdCode:str, qty:float, usertag:str = "", limitprice:float = 0.0, stopprice:float = 0.0):
-        '''
+        """
         设置仓位
-        @stdCode   合约/股票代码
-        @qty    目标仓位, 正为多仓, 负为空仓
-        @return 设置结果TRUE/FALSE
-        '''
+        
+        设置指定合约的目标仓位，框架会自动计算需要开仓或平仓的数量。
+        支持限价和止损价设置，用于条件单功能。
+        
+        @stdCode: 合约/股票代码，例如：SHFE.rb.2305
+        @qty: 目标仓位，正数表示多仓，负数表示空仓，0表示平仓
+        @usertag: 用户标记，用于标识该仓位的来源或用途，默认为空字符串
+        @limitprice: 限价，用于条件单，默认为0（不限制）
+        @stopprice: 止损价，用于条件单，默认为0（不限制）
+        """
+        # 调用底层包装器设置仓位
         self.__wrapper__.cta_set_position(self.__id__, stdCode, qty, usertag, limitprice, stopprice)
         
 
     def stra_enter_long(self, stdCode:str, qty:float, usertag:str = "", limitprice:float = 0.0, stopprice:float = 0.0):
-        '''
-        多仓进场, 如果有空仓, 则平空再开多
-        @stdCode   品种代码
-        @qty    数量
-        @limitprice 限价, 默认为0
-        @stopprice  止价, 默认为0
-        '''
+        """
+        多仓进场
+        
+        下达多仓进场指令，如果有空仓，则先平空再开多。
+        支持限价和止损价设置，用于条件单功能。
+        
+        @stdCode: 品种代码，例如：SHFE.rb.2305
+        @qty: 数量，要开仓的数量
+        @usertag: 用户标记，用于标识该仓位的来源或用途，默认为空字符串
+        @limitprice: 限价，用于条件单，默认为0（市价）
+        @stopprice: 止损价，用于条件单，默认为0（不限制）
+        """
+        # 调用底层包装器执行多仓进场
         self.__wrapper__.cta_enter_long(self.__id__, stdCode, qty, usertag, limitprice, stopprice)
 
     def stra_exit_long(self, stdCode:str, qty:float, usertag:str = "", limitprice:float = 0.0, stopprice:float = 0.0):
-        '''
-        多仓出场, 如果剩余多仓不够, 则全部平掉即可
-        @stdCode   品种代码
-        @qty    数量
-        @limitprice 限价, 默认为0
-        @stopprice  止价, 默认为0
-        '''
+        """
+        多仓出场
+        
+        下达多仓出场指令，如果剩余多仓不够，则全部平掉即可。
+        支持限价和止损价设置，用于条件单功能。
+        
+        @stdCode: 品种代码，例如：SHFE.rb.2305
+        @qty: 数量，要平仓的数量
+        @usertag: 用户标记，用于标识该仓位的来源或用途，默认为空字符串
+        @limitprice: 限价，用于条件单，默认为0（市价）
+        @stopprice: 止损价，用于条件单，默认为0（不限制）
+        """
+        # 调用底层包装器执行多仓出场
         self.__wrapper__.cta_exit_long(self.__id__, stdCode, qty, usertag, limitprice, stopprice)
 
     def stra_enter_short(self, stdCode:str, qty:float, usertag:str = "", limitprice:float = 0.0, stopprice:float = 0.0):
-        '''
-        空仓进场, 如果有多仓, 则平多再开空
-        @stdCode   品种代码
-        @qty    数量
-        @limitprice 限价, 默认为0
-        @stopprice  止价, 默认为0
-        '''
+        """
+        空仓进场
+        
+        下达空仓进场指令，如果有多仓，则先平多再开空。
+        支持限价和止损价设置，用于条件单功能。
+        
+        @stdCode: 品种代码，例如：SHFE.rb.2305
+        @qty: 数量，要开仓的数量
+        @usertag: 用户标记，用于标识该仓位的来源或用途，默认为空字符串
+        @limitprice: 限价，用于条件单，默认为0（市价）
+        @stopprice: 止损价，用于条件单，默认为0（不限制）
+        """
+        # 调用底层包装器执行空仓进场
         self.__wrapper__.cta_enter_short(self.__id__, stdCode, qty, usertag, limitprice, stopprice)
 
     def stra_exit_short(self, stdCode:str, qty:float, usertag:str = "", limitprice:float = 0.0, stopprice:float = 0.0):
-        '''
-        空仓出场, 如果剩余空仓不够, 则全部平掉即可
-        @stdCode   品种代码
-        @qty    数量
-        @limitprice 限价, 默认为0
-        @stopprice  止价, 默认为0
-        '''
+        """
+        空仓出场
+        
+        下达空仓出场指令，如果剩余空仓不够，则全部平掉即可。
+        支持限价和止损价设置，用于条件单功能。
+        
+        @stdCode: 品种代码，例如：SHFE.rb.2305
+        @qty: 数量，要平仓的数量
+        @usertag: 用户标记，用于标识该仓位的来源或用途，默认为空字符串
+        @limitprice: 限价，用于条件单，默认为0（市价）
+        @stopprice: 止损价，用于条件单，默认为0（不限制）
+        """
+        # 调用底层包装器执行空仓出场
         self.__wrapper__.cta_exit_short(self.__id__, stdCode, qty, usertag, limitprice, stopprice)
 
     def stra_get_last_entrytime(self, stdCode:str) -> int:
-        '''
+        """
         获取当前持仓最后一次进场时间
-        @stdCode   品种代码
-        @return 返回最后一次开仓的时间, 格式如201903121047
-        '''
+        
+        获取指定合约当前持仓的最后一次开仓时间。
+        
+        @stdCode: 品种代码，例如：SHFE.rb.2305
+        @return: 返回最后一次开仓的时间，格式如201903121047（yyyymmddHHMM），如果没有持仓则返回0
+        """
+        # 调用底层包装器获取最后进场时间
         return self.__wrapper__.cta_get_last_entertime(self.__id__, stdCode)
 
     def stra_get_last_entrytag(self, stdCode:str) -> str:
-        '''
+        """
         获取当前持仓最后一次进场标记
-        @stdCode    品种代码
-        @return     返回最后一次开仓标记
-        '''
+        
+        获取指定合约当前持仓的最后一次开仓标记。
+        
+        @stdCode: 品种代码，例如：SHFE.rb.2305
+        @return: 返回最后一次开仓标记，如果没有持仓则返回空字符串
+        """
+        # 调用底层包装器获取最后进场标记
         return self.__wrapper__.cta_get_last_entertag(self.__id__, stdCode)
 
     def stra_get_last_exittime(self, stdCode:str) -> int:
-        '''
+        """
         获取当前持仓最后一次出场时间
-        @stdCode   品种代码
-        @return 返回最后一次开仓的时间, 格式如201903121047
-        '''
+        
+        获取指定合约当前持仓的最后一次平仓时间。
+        
+        @stdCode: 品种代码，例如：SHFE.rb.2305
+        @return: 返回最后一次平仓的时间，格式如201903121047（yyyymmddHHMM），如果没有平仓记录则返回0
+        """
+        # 调用底层包装器获取最后出场时间
         return self.__wrapper__.cta_get_last_exittime(self.__id__, stdCode)
 
     def stra_get_first_entrytime(self, stdCode:str) -> int:
-        '''
+        """
         获取当前持仓第一次进场时间
-        @stdCode   品种代码
-        @return 返回最后一次开仓的时间, 格式如201903121047
-        '''
+        
+        获取指定合约当前持仓的第一次开仓时间。
+        
+        @stdCode: 品种代码，例如：SHFE.rb.2305
+        @return: 返回第一次开仓的时间，格式如201903121047（yyyymmddHHMM），如果没有持仓则返回0
+        """
+        # 调用底层包装器获取首次进场时间
         return self.__wrapper__.cta_get_first_entertime(self.__id__, stdCode)
 
 
     def user_save_data(self, key:str, val):
-        '''
+        """
         保存用户数据
-        @key    数据id
-        @val    数据值, 可以直接转换成str的数据均可
-        '''
+        
+        保存策略的自定义数据，数据会被持久化存储，在策略重启后可以读取。
+        
+        @key: 数据ID，用于标识不同的数据项
+        @val: 数据值，可以直接转换成str的数据均可（如int、float、str等）
+        """
+        # 调用底层包装器保存用户数据，将值转换为字符串
         self.__wrapper__.cta_save_user_data(self.__id__, key, str(val))
 
     def user_load_data(self, key:str, defVal = None, vType = float):
-        '''
+        """
         读取用户数据
-        @key    数据id
-        @defVal 默认数据, 如果找不到则返回改数据, 默认为None
-        @return 返回值, 默认处理为float数据
-        '''
+        
+        读取之前保存的用户自定义数据。
+        
+        @key: 数据ID，用于标识要读取的数据项
+        @defVal: 默认数据，如果找不到则返回该数据，默认为None
+        @vType: 数据类型转换函数，默认为float，用于将字符串转换为指定类型
+        @return: 返回值，根据vType转换为指定类型的数据
+        """
+        # 调用底层包装器读取用户数据，如果不存在则返回空字符串
         ret = self.__wrapper__.cta_load_user_data(self.__id__, key, "")
+        # 如果返回值为空字符串，返回默认值
         if ret == "":
             return defVal
 
+        # 使用指定的类型转换函数转换返回值
         return vType(ret)
 
     def stra_get_detail_profit(self, stdCode:str, usertag:str, flag:int = 0) -> float:
-        '''
+        """
         获取指定标记的持仓的盈亏
-        @stdCode       合约代码
-        @usertag    进场标记
-        @flag       盈亏记号, 0-浮动盈亏, 1-最大浮盈, -1-最大亏损（负数）, 2-最高浮动价格, -2-最低浮动价格
-        @return     盈亏 
-        '''
+        
+        获取指定合约和标记的持仓的盈亏信息。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        @usertag: 进场标记，用于区分不同标记的持仓
+        @flag: 盈亏记号，0-浮动盈亏，1-最大浮盈，-1-最大亏损（负数），2-最高浮动价格，-2-最低浮动价格，默认为0
+        @return: 盈亏数值，根据flag返回不同的盈亏信息
+        """
+        # 调用底层包装器获取详细盈亏
         return self.__wrapper__.cta_get_detail_profit(self.__id__, stdCode, usertag, flag)
 
     def stra_get_detail_cost(self, stdCode:str, usertag:str) -> float:
-        '''
+        """
         获取指定标记的持仓的开仓价
-        @stdCode       合约代码
-        @usertag    进场标记
-        @return     开仓价 
-        '''
+        
+        获取指定合约和标记的持仓的平均开仓价。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        @usertag: 进场标记，用于区分不同标记的持仓
+        @return: 开仓价，如果没有持仓则返回0
+        """
+        # 调用底层包装器获取详细成本
         return self.__wrapper__.cta_get_detail_cost(self.__id__, stdCode, usertag)
 
     def stra_get_detail_entertime(self, stdCode:str, usertag:str) -> int:
-        '''
+        """
         获取指定标记的持仓的进场时间
-        @stdCode       合约代码
-        @usertag    进场标记
-        @return     进场时间, 格式如201907260932 
-        '''
+        
+        获取指定合约和标记的持仓的进场时间。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        @usertag: 进场标记，用于区分不同标记的持仓
+        @return: 进场时间，格式如201907260932（yyyymmddHHMM），如果没有持仓则返回0
+        """
+        # 调用底层包装器获取详细进场时间
         return self.__wrapper__.cta_get_detail_entertime(self.__id__, stdCode, usertag)
     
     def stra_get_all_codes(self) -> list:
-        '''
+        """
         获取全部合约代码列表
-        '''
+        
+        获取引擎中所有可用的合约代码列表。
+        
+        @return: 合约代码列表，如果引擎不存在则返回空列表
+        """
+        # 如果引擎对象不存在，返回空列表
         if self.__engine__ is None:
             return []
+        # 调用引擎的getAllCodes方法获取全部合约代码
         return self.__engine__.getAllCodes()
     
     def stra_get_codes_by_product(self, stdPID:str) -> list:
-        '''
+        """
         根据品种代码读取合约列表
-        @stdPID 品种代码，格式如SHFE.rb
-        '''
+        
+        获取指定品种下的所有合约代码列表。
+        
+        @stdPID: 品种代码，格式如SHFE.rb
+        @return: 合约代码列表，如果引擎不存在则返回空列表
+        """
+        # 如果引擎对象不存在，返回空列表
         if self.__engine__ is None:
             return []
+        # 调用引擎的getCodesByProduct方法获取合约列表
         return self.__engine__.getCodesByProduct(stdPID)
     
     def stra_get_codes_by_underlying(self, underlying:str) -> list:
-        '''
-        根据underlying读取合约列表
-        @underlying 格式如CFFEX.IM2304
-        '''
+        """
+        根据标的资产读取合约列表（期权专用）
+        
+        获取指定标的资产下的所有期权合约代码列表。
+        
+        @underlying: 标的资产代码，格式如CFFEX.IM2304
+        @return: 合约代码列表，如果引擎不存在则返回空列表
+        """
+        # 如果引擎对象不存在，返回空列表
         if self.__engine__ is None:
             return []
+        # 调用引擎的getCodesByUnderlying方法获取合约列表
         return self.__engine__.getCodesByUnderlying(underlying)
 
     def stra_get_comminfo(self, stdCode:str) -> ProductInfo:
-        '''
+        """
         获取品种详情
-        @stdCode   合约代码如SHFE.ag.HOT, 或者品种代码如SHFE.ag
-        @return 品种信息, 结构请参考ProductMgr中的ProductInfo
-        '''
+        
+        获取指定合约或品种的详细信息，包括品种代码、名称、交易时段等。
+        
+        @stdCode: 合约代码如SHFE.ag.HOT，或者品种代码如SHFE.ag
+        @return: 品种信息对象（ProductInfo），如果不存在则返回None，结构请参考ProductMgr中的ProductInfo
+        """
+        # 如果引擎对象不存在，返回None
         if self.__engine__ is None:
             return None
+        # 调用引擎的getProductInfo方法获取品种信息
         return self.__engine__.getProductInfo(stdCode)
     
     def stra_get_contract(self, stdCode:str) -> ContractInfo:
-        '''
-        获取合约详情，回测框架下支持不够完善，慎用！
-        @stdCode   合约代码如SHFE.ag.2302
-        @return 品种信息, 结构请参考ContractMgr中的ContractInfo
-        '''
+        """
+        获取合约详情
+        
+        获取指定合约的详细信息，包括合约代码、名称、上市日期、到期日等。
+        注意：回测框架下支持不够完善，慎用！
+        
+        @stdCode: 合约代码，例如：SHFE.ag.2302
+        @return: 合约信息对象（ContractInfo），如果不存在则返回None，结构请参考ContractMgr中的ContractInfo
+        """
+        # 如果引擎对象不存在，返回None
         if self.__engine__ is None:
             return None
+        # 调用引擎的getContractInfo方法获取合约信息
         return self.__engine__.getContractInfo(stdCode)
 
     def stra_get_rawcode(self, stdCode:str):
-        '''
+        """
         获取分月合约代码
-        @stdCode   连续合约代码如SHFE.ag.HOT
-        @return 品种信息,结构请参考ProductMgr中的ProductInfo
-        '''
+        
+        根据连续合约代码获取当前对应的分月合约代码。
+        例如：SHFE.rb.HOT可能对应SHFE.rb.2305。
+        
+        @stdCode: 连续合约代码，例如：SHFE.ag.HOT
+        @return: 分月合约代码，例如：SHFE.ag.2305，如果不存在则返回空字符串
+        """
+        # 如果引擎对象不存在，返回空字符串
         if self.__engine__ is None:
             return ""
+        # 调用引擎的getRawStdCode方法获取原始合约代码
         return self.__engine__.getRawStdCode(stdCode)
 
     def stra_get_sessinfo(self, stdCode:str) -> SessionInfo:
-        '''
+        """
         获取交易时段详情
-        @stdCode   合约代码如SHFE.ag.HOT, 或者品种代码如SHFE.ag
-        @return 品种信息, 结构请参考SessionMgr中的SessionInfo
-        '''
+        
+        获取指定合约或品种的交易时段信息，包括交易时间段、集合竞价时间等。
+        
+        @stdCode: 合约代码如SHFE.ag.HOT，或者品种代码如SHFE.ag
+        @return: 交易时段信息对象（SessionInfo），如果不存在则返回None，结构请参考SessionMgr中的SessionInfo
+        """
+        # 如果引擎对象不存在，返回None
         if self.__engine__ is None:
             return None
+        # 调用引擎的getSessionByCode方法获取交易时段信息
         return self.__engine__.getSessionByCode(stdCode)
 
     def set_chart_kline(self, stdCode:str, period:str):
-        '''
+        """
         设置图表K线
-        @stdCode    合约代码
-        @period     K线周期
-        '''
+        
+        设置策略图表显示的主K线，用于可视化展示。
+        设置后，图表会显示该合约和周期的K线数据。
+        
+        @stdCode: 合约代码，例如：SHFE.rb.2305
+        @period: K线周期，例如：m5、d
+        """
+        # 调用底层包装器设置图表K线
         self.__wrapper__.cta_set_chart_kline(self.__id__, stdCode, period)
 
     def add_chart_mark(self, price:float, icon:str, tag:str = 'Notag'):
-        '''
+        """
         添加图表标记
-        @price  价格, 决定图标出现的位置
-        @icon   图标, 系统一定的图标ID
-        @tag    标签, 自定义的
-        '''
+        
+        在策略图表上添加标记点，用于标识重要的价格位置或事件。
+        
+        @price: 价格，决定图标出现的位置
+        @icon: 图标，系统预定义的图标ID，用于选择不同的图标样式
+        @tag: 标签，自定义的标记文本，默认为'Notag'
+        """
+        # 调用底层包装器添加图表标记
         self.__wrapper__.cta_add_chart_mark(self.__id__, price, icon, tag)
 
     def register_index(self, idxName:str, idxType:int = 1):
-        '''
-        注册指标, on_init调用
-        @idxName    指标名
-        @idxType    指标类型, 0-主图指标, 1-副图指标
-        '''
+        """
+        注册指标
+        
+        注册一个自定义指标，用于在图表上显示。
+        一般在on_init中调用。
+        
+        @idxName: 指标名称，用于标识该指标
+        @idxType: 指标类型，0-主图指标（显示在K线图上），1-副图指标（显示在独立窗口中），默认为1
+        """
+        # 调用底层包装器注册指标
         self.__wrapper__.cta_register_index(self.__id__, idxName, idxType)
 
     def register_index_line(self, idxName:str, lineName:str, lineType:int = 0) -> bool:
-        '''
-        注册指标线, on_init调用
-        @idxName    指标名称
-        @lineName   线名称
-        @lineType   线型, 0-曲线, 1-柱子
-        '''
+        """
+        注册指标线
+        
+        为已注册的指标添加一条指标线，用于显示指标的具体数值。
+        一般在on_init中调用。
+        
+        @idxName: 指标名称，必须是已注册的指标
+        @lineName: 线名称，用于标识该指标线
+        @lineType: 线型，0-曲线，1-柱子（柱状图），默认为0
+        @return: 注册是否成功，True表示成功，False表示失败
+        """
+        # 调用底层包装器注册指标线
         return self.__wrapper__.cta_register_index_line(self.__id__, idxName, lineName, lineType)
 
     def add_index_baseline(self, idxName:str, lineName:str, value:float) -> bool:
-        '''
-        添加基准线, on_init调用
-        @idxName    指标名称
-        @lineName   线名称
-        @value      基准线数值
-        '''
+        """
+        添加基准线
+        
+        为指标线添加一条基准线，用于参考对比。
+        一般在on_init中调用。
+        
+        @idxName: 指标名称，必须是已注册的指标
+        @lineName: 线名称，必须是已注册的指标线
+        @value: 基准线数值，基准线会显示在指标的该数值位置
+        @return: 添加是否成功，True表示成功，False表示失败
+        """
+        # 调用底层包装器添加基准线
         return self.__wrapper__.cta_add_index_baseline(self.__id__, idxName, lineName, value)
 
     def set_index_value(self, idxName:str, lineName:str, val:float) -> bool:
-        '''
-        设置指标值, 只有在oncalc的时候才生效
-        @idxName    指标名称
-        @lineName   线名称
-        '''
+        """
+        设置指标值
+        
+        设置指标线的当前数值，用于更新指标显示。
+        注意：只有在on_calculate的时候才生效，在其他时候调用不会更新图表。
+        
+        @idxName: 指标名称，必须是已注册的指标
+        @lineName: 线名称，必须是已注册的指标线
+        @val: 指标值，要设置的指标数值
+        @return: 设置是否成功，True表示成功，False表示失败
+        """
+        # 调用底层包装器设置指标值
         return self.__wrapper__.cta_set_index_value(self.__id__, idxName, lineName, val)

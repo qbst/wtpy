@@ -1,23 +1,47 @@
 # -*- encoding: utf-8 -*-
 
-import multiprocessing
-import time
-import json
-import yaml
+"""
+基于遗传算法的CTA策略参数优化模块
 
-import os
-import math
-import numpy as np
-import pandas as pd
-from pandas import DataFrame as df
-from itertools import product
-from random import random, choice
+本模块使用遗传算法（Genetic Algorithm）对CTA策略进行参数优化，相比网格搜索，
+遗传算法能够在更大的参数空间中更高效地搜索最优解。
 
-from deap import creator, base, tools, algorithms
+主要功能：
+1. 使用遗传算法进行参数优化，避免穷举所有参数组合
+2. 支持自定义适应度函数（优化目标）
+3. 支持交叉、变异等遗传操作
+4. 多进程并行执行回测，提高优化效率
+5. 自动分析回测结果，生成绩效指标
 
-from wtpy import WtBtEngine, EngineType
-from wtpy.apps import WtBtAnalyst
-from wtpy.apps.WtBtAnalyst import summary_analyze
+设计逻辑：
+- 使用DEAP库实现遗传算法
+- 将参数组合编码为个体，通过适应度函数评估个体优劣
+- 通过选择、交叉、变异等操作进化种群
+- 支持自定义优化目标（如胜率、夏普比率等）
+"""
+
+# 导入标准库模块
+import multiprocessing  # 多进程支持
+import time             # 时间相关操作
+import json             # JSON数据处理
+import yaml             # YAML配置文件解析
+
+# 导入第三方库
+import os               # 操作系统接口
+import math             # 数学函数
+import numpy as np      # 数值计算库
+import pandas as pd     # 数据处理库
+from pandas import DataFrame as df  # DataFrame类型别名
+from itertools import product  # 笛卡尔积，用于生成参数组合
+from random import random, choice  # 随机数生成
+
+# 导入遗传算法库
+from deap import creator, base, tools, algorithms  # DEAP遗传算法库
+
+# 导入wtpy框架模块
+from wtpy import WtBtEngine, EngineType  # 回测引擎和引擎类型
+from wtpy.apps import WtBtAnalyst         # 回测分析器
+from wtpy.apps.WtBtAnalyst import summary_analyze  # 概要分析函数
 
 
 def fmtNAN(val, defVal=0):
@@ -28,78 +52,120 @@ def fmtNAN(val, defVal=0):
 
 
 class ParamInfo:
-    '''
+    """
     参数信息类
-    '''
+    
+    用于存储策略参数的配置信息，支持两种参数生成方式：
+    1. 范围参数：指定起始值、结束值和步长，自动生成参数序列
+    2. 列表参数：直接指定参数值列表
+    """
 
     def __init__(self, name: str, start_val=None, end_val=None, step_val=None, ndigits=1, val_list: list = None):
-        self.name = name  # 参数名
+        """
+        初始化参数信息
+        
+        @param name: 参数名称
+        @param start_val: 起始值（范围参数）
+        @param end_val: 结束值（范围参数）
+        @param step_val: 变化步长（范围参数）
+        @param ndigits: 小数位数，用于四舍五入
+        @param val_list: 参数值列表（列表参数），如果指定则忽略范围参数
+        """
+        self.name = name          # 参数名称
         self.start_val = start_val  # 起始值
-        self.end_val = end_val  # 结束值
-        self.step_val = step_val  # 变化步长
-        self.ndigits = ndigits  # 小数位
-        self.val_list = val_list  # 指定参数
+        self.end_val = end_val      # 结束值
+        self.step_val = step_val    # 变化步长
+        self.ndigits = ndigits      # 小数位数
+        self.val_list = val_list    # 指定的参数值列表
 
     def gen_array(self):
+        """
+        生成参数值数组
+        
+        根据配置生成参数值数组。如果指定了val_list，则直接返回列表；
+        否则根据start_val、end_val和step_val生成参数序列。
+        
+        @return: 参数值列表
+        """
+        # 如果指定了参数值列表，直接返回
         if self.val_list is not None:
             return self.val_list
 
+        # 否则根据范围生成参数序列
         values = list()
+        # 从起始值开始，四舍五入到指定小数位
         curVal = round(self.start_val, self.ndigits)
+        # 循环生成参数值，直到达到或超过结束值
         while curVal < self.end_val:
             values.append(curVal)
 
+            # 增加步长
             curVal += self.step_val
+            # 四舍五入到指定小数位
             curVal = round(curVal, self.ndigits)
+            # 如果达到或超过结束值，则设置为结束值并退出循环
             if curVal >= self.end_val:
                 curVal = self.end_val
                 break
+        # 添加最后一个值（结束值）
         values.append(round(curVal, self.ndigits))
         return values
 
 
+# 创建适应度类，用于最大化适应度值（weights=(1.0,)表示最大化）
 creator.create("FitnessMax", base.Fitness, weights=(1.0,))
+# 创建个体类，个体是一个列表，带有适应度属性
 creator.create("Individual", list, fitness=creator.FitnessMax)
 
 
 class WtCtaGAOptimizer:
-    '''
-    参数优化器\n
-    主要用于做策略参数优化的
-    '''
+    """
+    基于遗传算法的CTA策略参数优化器类
+    
+    使用遗传算法对CTA策略进行参数优化，相比网格搜索，遗传算法能够在更大的参数空间中
+    更高效地搜索最优解。通过选择、交叉、变异等遗传操作进化种群，找到最优参数组合。
+    """
 
     def __init__(self, worker_num: int = 2, MU: int = 80, population_size: int = 100, ngen_size: int = 20,
                  cx_prb: float = 0.9, mut_prb: float = 0.1):
-        '''
-        构造函数\n
-
-        @worker_num 工作进程个数，默认为2，可以根据CPU核心数设置，由于计算回测值是从文件里读取，因此进程过多可能会出现冲突\n
-        @MU        每一代选择的个体数\n
-        @population_size 种群数\n
-        @ngen_size 进化代数\n
-        @cx_prb    交叉概率\n
-        @mut_prb   变异概率
-        '''
+        """
+        初始化基于遗传算法的CTA策略参数优化器
+        
+        @param worker_num: 工作进程个数，默认为2，可以根据CPU核心数设置。
+                          由于计算回测值是从文件里读取，因此进程过多可能会出现冲突
+        @param MU: 每一代选择的个体数（精英个体数），可以取种群数的0.8倍
+        @param population_size: 种群大小（每代个体总数）
+        @param ngen_size: 进化代数（优化迭代次数），根据population_size大小设定
+        @param cx_prb: 交叉概率，建议取0.4~0.99之间
+        @param mut_prb: 变异概率，建议取0.0001~0.1之间
+        """
+        # 工作进程数量
         self.worker_num = worker_num
+        # 当前正在运行的工作进程数量
         self.running_worker = 0
+        # 可变参数字典，存储需要优化的参数配置
         self.mutable_params = dict()
+        # 固定参数字典，存储不需要优化的参数值
         self.fixed_params = dict()
+        # 回测环境参数字典，存储回测配置信息
         self.env_params = dict()
 
         # 遗传算法优化参数设置
-        self.optimizing_target = "胜率"
+        self.optimizing_target = "胜率"  # 优化目标名称（默认胜率）
         self.optimizing_target_func = None  # 适应度函数，原则上要求为非负
 
-        self.population_size = population_size  # 种群数
-        self.ngen_size = ngen_size  # 进化代数，即优化迭代次数，根据population_size大小设定
-        self.MU = MU  # 每一代选择的个体数，可以取个体数的0.8倍
-        self.lambda_ = self.population_size  # 下一代产生的个体数
-        self.cx_prb = cx_prb  # 建议取0.4~0.99之间
-        self.mut_prb = mut_prb  # 建议取0.0001~0.1之间
+        self.population_size = population_size  # 种群大小（每代个体总数）
+        self.ngen_size = ngen_size  # 进化代数（优化迭代次数）
+        self.MU = MU  # 每一代选择的精英个体数，可以取种群数的0.8倍
+        self.lambda_ = self.population_size  # 下一代产生的个体数（通常等于种群大小）
+        self.cx_prb = cx_prb  # 交叉概率，建议取0.4~0.99之间
+        self.mut_prb = mut_prb  # 变异概率，建议取0.0001~0.1之间
 
+        # C++策略模块路径（如果使用C++策略）
         self.cpp_stra_module = None
 
-        self.cache_dict = multiprocessing.Manager().dict()  # 缓存中间结果
+        # 缓存中间结果，使用多进程共享字典
+        self.cache_dict = multiprocessing.Manager().dict()
 
     def add_mutable_param(self, name: str, start_val, end_val, step_val, ndigits=1):
         '''

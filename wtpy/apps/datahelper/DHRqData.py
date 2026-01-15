@@ -1,10 +1,30 @@
+"""
+RQData数据辅助工具模块
+
+本模块提供了从RQData（米筐数据）获取金融数据的接口。
+RQData是一个专业的量化数据平台，提供股票、期货、期权等多种金融数据。
+
+主要功能：
+1. 获取股票、指数代码列表
+2. 获取日线、分钟线K线数据
+3. 获取复权因子数据
+4. 支持将数据导出到文件或数据库
+
+数据源：https://www.ricequant.com/
+注意：需要RQData账号和授权
+"""
+
+# 导入数据辅助工具基类
 from wtpy.apps.datahelper.DHDefs import BaseDataHelper, DBHelper
+# 导入wtpy核心定义
 from wtpy.WtCoreDefs import WTSBarStruct
+# 导入RQData库
 import rqdatac as rq
-from datetime import datetime, timedelta
-import json
-import os
-import logging
+# 导入标准库模块
+from datetime import datetime, timedelta  # 日期时间处理
+import json                                # JSON数据处理
+import os                                  # 操作系统接口
+import logging                             # 日志记录
 
 def exchgStdToRQ(exchg:str) -> str:
     if exchg == 'SSE':
@@ -50,6 +70,13 @@ def to_float(v:str, defVal:float = 0) -> float:
         return defVal
 
 class DHRqData(BaseDataHelper):
+    """
+    RQData数据辅助工具类
+    
+    用于从RQData（米筐数据）获取金融数据，包括代码列表、K线数据、复权因子等。
+    继承自BaseDataHelper，实现了所有必需的数据获取方法。
+    注意：使用前需要先调用auth()方法进行授权。
+    """
 
     def __init__(self):
         BaseDataHelper.__init__(self)

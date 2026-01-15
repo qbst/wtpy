@@ -1,9 +1,28 @@
+"""
+Tushare数据辅助工具模块
+
+本模块提供了从Tushare获取金融数据的接口。
+Tushare是一个免费、开源的金融数据平台，提供股票、期货、期权等多种金融数据。
+
+主要功能：
+1. 获取股票、指数代码列表
+2. 获取日线、分钟线K线数据
+3. 获取复权因子数据
+4. 支持将数据导出到文件或数据库
+
+数据源：https://tushare.pro/
+注意：需要Tushare账号和token（pro版本）
+"""
+
+# 导入数据辅助工具基类
 from wtpy.apps.datahelper.DHDefs import BaseDataHelper, DBHelper
+# 导入Tushare库
 import tushare as ts
-from datetime import datetime
-import json
-import os
-import logging
+# 导入标准库模块
+from datetime import datetime  # 日期时间处理
+import json                     # JSON数据处理
+import os                       # 操作系统接口
+import logging                  # 日志记录
 
 def transCode(stdCode:str) -> str:
     items = stdCode.split(".")
@@ -40,6 +59,14 @@ def transCode(stdCode:str) -> str:
     return rawCode.upper() + "." + exchg   
 
 class DHTushare(BaseDataHelper):
+    """
+    Tushare数据辅助工具类
+    
+    用于从Tushare获取金融数据，包括代码列表、K线数据、复权因子等。
+    继承自BaseDataHelper，实现了所有必需的数据获取方法。
+    支持Tushare Pro版本和旧版本API。
+    注意：使用前需要先调用auth()方法进行授权。
+    """
 
     def __init__(self):
         BaseDataHelper.__init__(self)

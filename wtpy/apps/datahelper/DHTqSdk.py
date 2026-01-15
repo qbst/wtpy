@@ -1,10 +1,29 @@
+"""
+TqSdk数据辅助工具模块
+
+本模块提供了从TqSdk（天勤量化）获取金融数据的接口。
+TqSdk是天勤量化开发的Python SDK，提供股票、期货等金融数据。
+
+主要功能：
+1. 获取股票、期货代码列表
+2. 获取日线、分钟线K线数据
+3. 支持将数据导出到文件或数据库
+
+数据源：https://www.shinnytech.com/tqsdk/
+注意：需要天勤账号和授权
+"""
+
+# 导入数据辅助工具基类
 from wtpy.apps.datahelper.DHDefs import BaseDataHelper, DBHelper
+# 导入wtpy核心定义
 from wtpy.WtCoreDefs import WTSBarStruct
+# 导入TqSdk库
 from tqsdk import TqApi, TqAuth
-from datetime import datetime
-import json
-import os
-import logging
+# 导入标准库模块
+from datetime import datetime  # 日期时间处理
+import json                     # JSON数据处理
+import os                       # 操作系统接口
+import logging                  # 日志记录
 
 
 def stdCodeToTQ(stdCode:str):
@@ -27,6 +46,13 @@ def stdCodeToTQ(stdCode:str):
 
 
 class DHTqSdk(BaseDataHelper):
+    """
+    TqSdk数据辅助工具类
+    
+    用于从TqSdk（天勤量化）获取金融数据，包括代码列表、K线数据等。
+    继承自BaseDataHelper，实现了所有必需的数据获取方法。
+    注意：使用前需要先调用auth()方法进行授权。
+    """
 
     def __init__(self):
         BaseDataHelper.__init__(self)

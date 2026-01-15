@@ -1,19 +1,41 @@
-from pandas import DataFrame as df
-import pandas as pd
-import numpy as np
-from dateutil.parser import parse
-from collections import Counter
-from datetime import datetime
-import math
-import os
-import json
-from xlsxwriter import Workbook
+"""
+回测结果分析器模块
+
+本模块用于分析策略回测的绩效指标，生成详细的回测分析报告，包括Excel格式的分析报告。
+
+主要功能：
+1. 读取回测结果文件（closes.csv、funds.csv、trades.csv）
+2. 计算各种绩效指标（胜率、夏普比率、最大回撤等）
+3. 生成交易分析、策略分析、周期分析等详细报告
+4. 输出Excel格式的分析报告，包含图表和数据表格
+
+设计逻辑：
+- 使用pandas进行数据处理和分析
+- 计算多种绩效指标，包括收益率、风险指标、交易统计等
+- 支持按日、按月、按年进行周期分析
+- 生成Excel报告，包含多个工作表，每个工作表对应一种分析维度
+"""
+
+# 导入标准库模块
+from pandas import DataFrame as df  # DataFrame类型别名
+import pandas as pd                  # 数据处理库
+import numpy as np                   # 数值计算库
+from dateutil.parser import parse   # 日期解析
+from collections import Counter      # 计数器
+from datetime import datetime        # 日期时间处理
+import math                          # 数学函数
+import os                            # 操作系统接口
+import json                          # JSON数据处理
+from xlsxwriter import Workbook     # Excel文件写入
 
 
 class Calculate():
-    '''
-    绩效比率计算
-    '''
+    """
+    绩效比率计算类
+    
+    用于计算各种绩效指标，包括夏普比率、索提诺比率、最大回撤、年化收益率等。
+    这些指标用于评估策略的表现。
+    """
     def __init__(self, ret, mar, rf, period, trade,capital,ret_day=[],trade_day=0,profit=0):
         """
         :param ret: 收益率序列(单笔)
@@ -1599,8 +1621,20 @@ def do_trading_analyze2(df_closes, df_funds):
     return summary
 
 class WtBtAnalyst:
+    """
+    回测结果分析器类
+    
+    用于分析策略回测的绩效指标，生成详细的回测分析报告。
+    支持多个策略的分析，可以生成Excel格式的分析报告。
+    """
 
     def __init__(self):
+        """
+        初始化回测结果分析器
+        
+        创建空的策略字典，用于存储待分析的策略信息。
+        """
+        # 策略字典，存储策略信息，格式：{策略名称: {配置信息}}
         self.__strategies__ = dict()
         return
 

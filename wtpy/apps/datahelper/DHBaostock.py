@@ -1,10 +1,29 @@
+"""
+Baostock数据辅助工具模块
+
+本模块提供了从Baostock（证券宝）获取股票数据的接口。
+Baostock是一个免费、开源的证券数据平台，提供A股历史行情数据。
+
+主要功能：
+1. 获取A股股票代码列表
+2. 获取日线和5分钟K线数据
+3. 获取复权因子数据
+4. 支持将数据导出到文件或数据库
+
+数据源：http://baostock.com/
+"""
+
+# 导入数据辅助工具基类
 from wtpy.apps.datahelper.DHDefs import BaseDataHelper, DBHelper
+# 导入wtpy核心定义
 from wtpy.WtCoreDefs import WTSBarStruct
+# 导入Baostock库
 import baostock as bs
-from datetime import datetime, timedelta
-import json
-import os
-import logging
+# 导入标准库模块
+from datetime import datetime, timedelta  # 日期时间处理
+import json                                # JSON数据处理
+import os                                  # 操作系统接口
+import logging                             # 日志记录
 
 def transCodes(codes:list) -> list:
     ret = list()
@@ -29,6 +48,12 @@ def to_float(v:str, defVal:float = 0) -> float:
         return defVal
 
 class DHBaostock(BaseDataHelper):
+    """
+    Baostock数据辅助工具类
+    
+    用于从Baostock（证券宝）获取A股股票数据，包括代码列表、K线数据、复权因子等。
+    继承自BaseDataHelper，实现了所有必需的数据获取方法。
+    """
 
     def __init__(self):
         BaseDataHelper.__init__(self)

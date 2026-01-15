@@ -1,60 +1,150 @@
-import multiprocessing
-import time
-import json
-import yaml
-import datetime
-import ctypes
+"""
+CTA策略参数优化模块
 
-import os
-import math
-import pandas as pd
-from pandas import DataFrame as df
+本模块用于对CTA（Commodity Trading Advisor，商品交易顾问）策略进行参数优化，
+通过网格搜索的方式遍历参数空间，对每组参数进行回测，并分析回测结果，找出最优参数组合。
 
-from wtpy import WtBtEngine,EngineType
-from wtpy.apps import WtBtAnalyst
-from wtpy.apps.WtBtAnalyst import summary_analyze
-from wtpy.WtMsgQue import WtMsgQue,WtMQServer
+主要功能：
+1. 支持可变参数和固定参数的设置
+2. 自动生成参数组合并执行回测任务
+3. 多进程并行执行回测，提高优化效率
+4. 自动分析回测结果，生成绩效指标
+5. 支持Python策略和C++策略的优化
+6. 支持消息队列通知优化进度
+
+设计逻辑：
+- 使用多进程并行执行回测任务，充分利用多核CPU
+- 将参数组合分组，每组共享一个回测引擎，减少IO开销
+- 自动生成策略名称，包含参数信息，便于识别
+- 回测完成后自动分析结果，生成summary.json文件
+- 支持通过消息队列实时通知优化进度
+"""
+
+# 导入标准库模块
+import multiprocessing  # 多进程支持
+import time             # 时间相关操作
+import json             # JSON数据处理
+import yaml             # YAML配置文件解析
+import datetime         # 日期时间处理
+import ctypes           # C类型支持
+
+# 导入第三方库
+import os               # 操作系统接口
+import math             # 数学函数
+import pandas as pd     # 数据处理库
+from pandas import DataFrame as df  # DataFrame类型别名
+
+# 导入wtpy框架模块
+from wtpy import WtBtEngine,EngineType  # 回测引擎和引擎类型
+from wtpy.apps import WtBtAnalyst       # 回测分析器
+from wtpy.apps.WtBtAnalyst import summary_analyze  # 概要分析函数
+from wtpy.WtMsgQue import WtMsgQue,WtMQServer      # 消息队列
 
 def fmtNAN(val, defVal = 0):
+    """
+    格式化NaN值
+    
+    如果值为NaN（Not a Number），则返回默认值，否则返回原值。
+    用于处理数据分析中可能出现的NaN值。
+    
+    @param val: 待检查的值
+    @param defVal: 默认值，当val为NaN时返回此值，默认为0
+    @return: 格式化后的值
+    """
+    # 检查值是否为NaN
     if math.isnan(val):
         return defVal
 
     return val
 
+# 创建消息队列对象
 mq = WtMsgQue()
+
 class OptimizeNotifier:
+    """
+    优化进度通知器类
+    
+    用于通过消息队列实时通知参数优化的进度，包括开始、停止和状态更新事件。
+    支持外部系统通过订阅消息队列来监控优化进度。
+    """
     def __init__(self, url:str):
+        """
+        初始化优化进度通知器
+        
+        @param url: 消息队列服务器URL地址
+        """
+        # 消息队列服务器URL
         self._url = url
+        # 消息队列服务器对象
         self._server:WtMQServer = None
 
     def run(self):
+        """
+        启动消息队列服务器
+        
+        创建并启动消息队列服务器，准备接收和发送消息。
+        """
+        # 添加消息队列服务器
         self._server = mq.add_mq_server(self._url)
 
     def publish(self, topic:str, message:str):
+        """
+        发布消息到消息队列
+        
+        @param topic: 消息主题
+        @param message: 消息内容（字符串格式）
+        """
+        # 如果服务器未启动，直接返回
         if self._server is None:
             return
+        # 发布消息
         self._server.publish_message(topic, message)
 
     def on_start(self, pgroups:int):
+        """
+        通知优化开始事件
+        
+        @param pgroups: 参数组总数
+        """
+        # 构建开始事件数据
         data = {
-            "pgroups":pgroups
+            "pgroups":pgroups  # 参数组总数
         }
+        # 发布开始事件消息
         self.publish("OPT_START", json.dumps(data))
 
     def on_stop(self, pgroups:int, elapse:int):
+        """
+        通知优化停止事件
+        
+        @param pgroups: 参数组总数
+        @param elapse: 耗时（毫秒）
+        """
+        # 构建停止事件数据
         data = {
-            "pgroups": pgroups,
-            "elapse":int(elapse)
+            "pgroups": pgroups,  # 参数组总数
+            "elapse":int(elapse)  # 耗时（毫秒）
         }
+        # 发布停止事件消息
         self.publish("OPT_STOP", json.dumps(data))
 
     def on_state(self, pgroups:int, done:int, progress:float, elapse:float):
+        """
+        通知优化状态更新事件
+        
+        @param pgroups: 参数组总数
+        @param done: 已完成数量
+        @param progress: 进度百分比
+        @param elapse: 已耗时（毫秒）
+        """
+        # 构建状态更新数据
         data = {
-            "pgroups": pgroups,
-            "done": done,
-            "progress":progress,
-            "elapse":int(elapse)
+            "pgroups": pgroups,    # 参数组总数
+            "done": done,          # 已完成数量
+            "progress":progress,   # 进度百分比
+            "elapse":int(elapse)   # 已耗时（毫秒）
         }
+        # 发布状态更新消息
         self.publish("OPT_STATE", json.dumps(data))
 
 def ayalyze_result(strName:str, time_range:tuple, params:dict, capital = 5000000, rf = 0, period = 240):
@@ -205,54 +295,96 @@ def start_task_group(env_params, gpName:str, params:list, counter, capital = 500
     engine.release_backtest()
 
 class ParamInfo:
-    '''
+    """
     参数信息类
-    '''
+    
+    用于存储策略参数的配置信息，支持两种参数生成方式：
+    1. 范围参数：指定起始值、结束值和步长，自动生成参数序列
+    2. 列表参数：直接指定参数值列表
+    """
     def __init__(self, name:str, start_val = None, end_val = None, step_val = None, ndigits = 1, val_list:list = None):
-        self.name = name    #参数名
-        self.start_val = start_val  #起始值
-        self.end_val = end_val      #结束值
-        self.step_val = step_val    #变化步长
-        self.ndigits = ndigits      #小数位
-        self.val_list = val_list    #指定参数
+        """
+        初始化参数信息
+        
+        @param name: 参数名称
+        @param start_val: 起始值（范围参数）
+        @param end_val: 结束值（范围参数）
+        @param step_val: 变化步长（范围参数）
+        @param ndigits: 小数位数，用于四舍五入
+        @param val_list: 参数值列表（列表参数），如果指定则忽略范围参数
+        """
+        self.name = name          # 参数名称
+        self.start_val = start_val  # 起始值
+        self.end_val = end_val      # 结束值
+        self.step_val = step_val    # 变化步长
+        self.ndigits = ndigits      # 小数位数
+        self.val_list = val_list    # 指定的参数值列表
 
     def gen_array(self):
+        """
+        生成参数值数组
+        
+        根据配置生成参数值数组。如果指定了val_list，则直接返回列表；
+        否则根据start_val、end_val和step_val生成参数序列。
+        
+        @return: 参数值列表
+        """
+        # 如果指定了参数值列表，直接返回
         if self.val_list is not None:
             return self.val_list
 
+        # 否则根据范围生成参数序列
         values = list()
+        # 从起始值开始，四舍五入到指定小数位
         curVal = round(self.start_val, self.ndigits)
+        # 循环生成参数值，直到达到或超过结束值
         while curVal < self.end_val:
             values.append(curVal)
 
+            # 增加步长
             curVal += self.step_val
+            # 四舍五入到指定小数位
             curVal = round(curVal, self.ndigits)
+            # 如果达到或超过结束值，则设置为结束值并退出循环
             if curVal >= self.end_val:
                 curVal = self.end_val
                 break
+        # 添加最后一个值（结束值）
         values.append(round(curVal, self.ndigits))
         return values
 
 class WtCtaOptimizer:
-    '''
-    参数优化器\n
-    主要用于做策略参数优化的
-    '''
+    """
+    CTA策略参数优化器类
+    
+    用于对CTA（Commodity Trading Advisor，商品交易顾问）策略进行参数优化，
+    通过网格搜索的方式遍历参数空间，对每组参数进行回测，并分析回测结果，找出最优参数组合。
+    支持多进程并行执行，提高优化效率。
+    """
     def __init__(self, worker_num:int = 8, notifier:OptimizeNotifier = None):
-        '''
-        构造函数\n
-
-        @worker_num 工作进程个数，默认为8，可以根据CPU核心数设置
-        '''
+        """
+        初始化CTA策略参数优化器
+        
+        @param worker_num: 工作进程个数，默认为8，可以根据CPU核心数设置
+        @param notifier: 优化进度通知器，用于实时通知优化进度，可选
+        """
+        # 工作进程数量
         self.worker_num = worker_num
+        # 当前正在运行的工作进程数量
         self.running_worker = 0
+        # 可变参数字典，存储需要优化的参数配置
         self.mutable_params = dict()
+        # 固定参数字典，存储不需要优化的参数值
         self.fixed_params = dict()
+        # 回测环境参数字典，存储回测配置信息
         self.env_params = dict()
 
+        # C++策略模块路径（如果使用C++策略）
         self.cpp_stra_module = None
+        # C++策略类型（如果使用C++策略）
         self.cpp_stra_type = None
 
+        # 优化进度通知器
         self.notifier = notifier        
         return
 

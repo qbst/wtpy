@@ -1,9 +1,36 @@
+"""
+MySQL数据库辅助工具模块
+
+本模块提供了将K线数据和复权因子数据存储到MySQL数据库的功能。
+继承自DBHelper基类，实现了数据库的初始化、数据写入等方法。
+
+主要功能：
+1. 初始化数据库表结构
+2. 批量写入K线数据（支持日线和分钟线）
+3. 批量写入复权因子数据
+4. 自动处理数据库连接和重连
+
+设计逻辑：
+- 使用pymysql库连接MySQL数据库
+- 使用REPLACE INTO语句实现数据的插入或更新
+- 批量写入数据，每500条提交一次，提高写入效率
+- 自动检测连接状态，断开时自动重连
+"""
+
+# 导入数据库辅助工具基类
 from wtpy.apps.datahelper.DHDefs import DBHelper
-import pymysql
-import math
-import os
+# 导入第三方库
+import pymysql  # MySQL数据库连接库
+import math     # 数学函数
+import os       # 操作系统接口
 
 class MysqlHelper(DBHelper):
+    """
+    MySQL数据库辅助工具类
+    
+    用于将K线数据和复权因子数据存储到MySQL数据库。
+    继承自DBHelper基类，实现了数据库的初始化、数据写入等方法。
+    """
     def __init__(self, host:str, user:str, pwd:str, dbname:str, port:int=3306):
         self.params = {
             "host":host,

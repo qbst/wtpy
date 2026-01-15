@@ -1,174 +1,333 @@
+"""
+主力合约选择器模块 (WtHotPicker)
 
-import datetime
-import time
-import json
-import os
-import logging
+本模块用于自动识别和切换期货主力合约，支持从交易所官网或本地快照文件获取行情数据，
+根据成交量、持仓量等指标自动确定主力合约和次主力合约，并生成换月规则。
 
-import urllib.request
-import io
-import gzip
-import xml.dom.minidom
-from pyquery import PyQuery as pq
-import re
+主要功能：
+1. 从交易所官网（CFFEX、SHFE、DCE、CZCE、INE）拉取当日行情快照
+2. 从本地快照文件读取行情数据
+3. 根据成交量、持仓量等指标自动识别主力合约和次主力合约
+4. 生成主力合约切换规则，支持全量重构和增量更新
+5. 支持邮件通知主力合约切换事件
+
+设计逻辑：
+- 使用缓存机制避免重复拉取数据
+- 支持多种数据源（交易所官网、本地快照文件）
+- 针对不同交易所采用不同的主力合约识别算法
+- 支持邮件通知功能，及时通知主力合约切换
+"""
+
+# 导入标准库模块
+import datetime  # 日期时间处理
+import time      # 时间相关操作
+import json      # JSON数据处理
+import os        # 操作系统接口
+import logging   # 日志记录
+
+# 导入网络请求相关模块
+import urllib.request  # HTTP请求
+import io             # 输入输出流
+import gzip           # GZIP压缩解压
+import xml.dom.minidom  # XML解析
+from pyquery import PyQuery as pq  # HTML解析
+import re  # 正则表达式
 
 class DayData:
     '''
-    每日行情数据
+    每日行情数据类
+    
+    用于存储单个合约在某个交易日的行情快照数据，包括合约代码、收盘价、成交量、持仓量等信息。
+    这些数据用于判断主力合约和次主力合约。
     '''
 
     def __init__(self):
-        self.pid = ''
-        self.month = 0
-        self.code = ''  # 代码
-        self.close = 0  # 今收盘(收盘价)
-        self.volume = 0  # 成交量(手)
-        self.hold = 0  # 空盘量(总持？持仓量)
+        """
+        初始化每日行情数据对象
+        
+        初始化所有字段为空值或0，后续通过数据拉取填充。
+        """
+        self.pid = ''      # 品种代码（如IF、IH、IC等）
+        self.month = 0     # 合约月份（如2103表示2021年3月）
+        self.code = ''     # 完整合约代码（如IF2103）
+        self.close = 0     # 收盘价
+        self.volume = 0    # 成交量（单位：手）
+        self.hold = 0      # 持仓量（总持仓量，单位：手）
 
 def extractPID(code):
+    """
+    从合约代码中提取品种代码
     
+    合约代码通常由品种代码和月份组成，如"IF2103"中"IF"是品种代码，"2103"是月份。
+    本函数通过查找第一个数字字符的位置来分离品种代码和月份。
+    
+    @param code: 合约代码字符串，如"IF2103"
+    @return: 品种代码字符串，如"IF"
+    """
+    # 遍历合约代码，找到第一个数字字符的位置
     for idx in range(0, len(code)):
         c = code[idx]
+        # 如果当前字符是数字，则停止遍历
         if '0' <= c and c <= '9': 
             break
     
+    # 返回数字字符之前的部分，即品种代码
     return code[:idx]
 
 def readFileContent(filename):
+    """
+    读取文件内容
+    
+    安全地读取文件内容，如果文件不存在则返回空字符串。
+    
+    @param filename: 文件路径
+    @return: 文件内容字符串，如果文件不存在则返回空字符串
+    """
+    # 检查文件是否存在
     if not os.path.exists(filename):
         return ""
+    # 打开文件并读取内容
     f = open(filename, 'r')
     content = f.read()
     f.close()
     return content
 
 def cmp_alg_01(left:DayData, right:DayData):
+    """
+    主力合约比较算法（算法1）
+    
+    用于中金所（CFFEX）的主力合约识别，综合考虑月份、持仓量和成交量。
+    比较逻辑：
+    1. 如果左边合约月份大于右边，且持仓量和成交量都满足条件，则左边优先
+    2. 否则右边优先
+    
+    @param left: 左侧合约的每日行情数据
+    @param right: 右侧合约的每日行情数据
+    @return: 1表示left优先，-1表示right优先
+    """
+    # 如果左边合约月份大于右边
     if left.month > right.month:
+        # 如果左边持仓量大于右边，且左边成交量大于右边成交量的1/3，则左边优先
         if left.hold > right.hold and left.volume > right.volume/3:
             return 1
         else:
             return -1
     else:
+        # 如果左边持仓量小于等于右边，或左边成交量小于等于右边成交量的1/3，则右边优先
         if left.hold <= right.hold or left.volume <= right.volume/3:
             return -1
         else:
             return 1
 
 def countFridays(curDate:datetime.datetime):
-    '''
+    """
     计算截止到当周的周五的天数
-    '''
+    
+    用于判断当前日期是当月的第几个周五，这对于中金所（CFFEX）的换月规则很重要。
+    中金所股指期货通常在当月第三个周五进行交割，需要根据周五数量判断是否到了换月时间。
+    
+    @param curDate: 当前日期
+    @return: 截止到当周的周五数量（包括当前周）
+    """
+    # 获取当前日期是星期几（0=周一，4=周五）
     wd = curDate.weekday()
+    # 从当月1日开始检查
     checkDate = datetime.datetime(year=curDate.year, month=curDate.month, day=1)
     count = 0
+    # 遍历从1日到当前日期的所有日期
     while checkDate < curDate:
+        # 如果是周五（weekday()==4），计数加1
         if checkDate.weekday() == 4:
             count += 1
         
         checkDate += datetime.timedelta(days=1)
 
+    # 如果当前日期还没到周五，但本周还没结束，则加上本周的周五
     if wd < 4:
         count += 1
 
     return count
 
 def httpGet(url, encoding='utf-8'):
+    """
+    发送HTTP GET请求并返回响应内容
+    
+    支持gzip压缩内容的自动解压，用于从交易所官网拉取行情数据。
+    
+    @param url: 请求的URL地址
+    @param encoding: 响应内容的编码格式，默认为utf-8
+    @return: 响应内容的字符串，如果请求失败则返回空字符串
+    """
+    # 创建HTTP请求对象
     request = urllib.request.Request(url)
+    # 添加请求头，支持gzip压缩
     request.add_header('Accept-encoding', 'gzip')
+    # 添加User-Agent，模拟浏览器请求
     request.add_header(
         'User-Agent', 'Mozilla/4.0 (compatible; MSIE 5.5; Windows NT)')
     try:
+        # 发送请求
         f = urllib.request.urlopen(request)
+        # 检查响应是否使用了gzip压缩
         ec = f.headers.get('Content-Encoding')
         if ec == 'gzip':
+            # 读取压缩内容
             cd = f.read()
+            # 创建字节流对象
             cs = io.BytesIO(cd)
+            # 使用gzip解压
             f = gzip.GzipFile(fileobj=cs)
 
+        # 读取并解码响应内容
         return f.read().decode(encoding)
     except:
+        # 如果请求失败，返回空字符串
         return ""
 
 def httpPost(url, datas, encoding='utf-8'):
+    """
+    发送HTTP POST请求并返回响应内容
+    
+    支持gzip压缩内容的自动解压，用于向交易所官网提交表单数据并获取响应。
+    
+    @param url: 请求的URL地址
+    @param datas: POST请求的数据字典
+    @param encoding: 响应内容的编码格式，默认为utf-8
+    @return: 响应内容的字符串，如果请求失败则返回空字符串
+    """
+    # 设置请求头
     headers = {
-        'User-Agent': 'Mozilla/4.0 (compatible; MSIE 5.5; Windows NT)',
-        'Accept-encoding': 'gzip'
+        'User-Agent': 'Mozilla/4.0 (compatible; MSIE 5.5; Windows NT)',  # 模拟浏览器
+        'Accept-encoding': 'gzip'  # 支持gzip压缩
     }
+    # 将数据字典编码为URL格式的字节串
     data = urllib.parse.urlencode(datas).encode('utf-8')
+    # 创建POST请求对象
     request = urllib.request.Request(url, data, headers)
     try:
+        # 发送请求
         f = urllib.request.urlopen(request)
+        # 检查响应是否使用了gzip压缩
         ec = f.headers.get('Content-Encoding')
         if ec == 'gzip':
+            # 读取压缩内容
             cd = f.read()
+            # 创建字节流对象
             cs = io.BytesIO(cd)
+            # 使用gzip解压
             f = gzip.GzipFile(fileobj=cs)
 
+        # 读取并解码响应内容
         return f.read().decode(encoding)
     except:
+        # 如果请求失败，返回空字符串
         return ""
 
 class WtCacheMon:
-    '''
+    """
     缓存管理器基类
-    '''
+    
+    用于缓存每日行情数据，避免重复拉取。子类需要实现get_cache方法来获取指定交易所和日期的行情数据。
+    采用字典结构缓存数据，key为日期字符串（格式：YYYYMMDD），value为交易所代码到行情数据的映射。
+    """
     def __init__(self):
+        """
+        初始化缓存管理器
+        
+        创建空的缓存字典，用于存储每日行情数据。
+        """
+        # 每日行情数据缓存，结构：{日期字符串: {交易所代码: {合约代码: DayData对象}}}
         self.day_cache = dict()
 
     def get_cache(self, exchg, curDT:datetime.datetime):
+        """
+        获取指定交易所和日期的行情缓存数据（抽象方法）
+        
+        子类必须实现此方法，用于获取指定交易所和日期的行情数据。
+        
+        @param exchg: 交易所代码（如CFFEX、SHFE等）
+        @param curDT: 指定日期
+        @return: 返回该交易所该日期的所有合约行情数据字典，格式：{合约代码: DayData对象}
+        """
         pass
 
 class WtCacheMonExchg(WtCacheMon):
-    '''
+    """
     交易所行情缓存器
-    通过到交易所官网上拉取当日的行情快照，缓存当日行情数据
-    '''
+    
+    通过访问交易所官网拉取当日的行情快照，并缓存当日行情数据。
+    支持从CFFEX（中金所）、SHFE（上期所）、DCE（大商所）、CZCE（郑商所）、INE（上海国际能源交易中心）
+    等交易所官网获取行情数据。
+    """
 
     @staticmethod
     def getCffexData(curDT:datetime.datetime) -> dict:
-        '''
-        读取CFFEX指定日期的行情快照
-
-        @curDT  指定的日期
-        '''
-
+        """
+        读取CFFEX（中金所）指定日期的行情快照
+        
+        从中国金融期货交易所官网拉取指定日期的所有合约行情数据，包括IF、IH、IC、T、TF、TS等品种。
+        数据格式为XML，需要解析XML获取各合约的收盘价、成交量、持仓量等信息。
+        
+        @param curDT: 指定的日期
+        @return: 返回该日期所有合约的行情数据字典，格式：{合约代码: DayData对象}，如果获取失败则返回None
+        """
+        # 将日期格式化为YYYYMMDD格式的字符串
         dtStr = curDT.strftime('%Y%m%d')
+        # 将日期字符串转换为整数
         dtNum = int(dtStr)
+        # 构建CFFEX官网的XML数据URL路径，格式：http://www.cffex.com.cn/fzjy/mrhq/YYYY/MM/index.xml
         path = "http://www.cffex.com.cn/fzjy/mrhq/%d/%02d/index.xml" % (dtNum/100, dtNum % 100)
+        # 发送HTTP GET请求获取XML内容
         content = httpGet(path)
+        # 如果获取失败（内容为空），返回None
         if len(content) == 0:
             return None
 
         try:
+            # 解析XML内容
             dom = xml.dom.minidom.parseString(content)
         except:
+            # 如果解析失败，记录日志并返回None
             logging.info("[CFFEX]%s无数据，跳过" % (dtStr))
             return None
 
+        # 获取XML根节点
         root = dom.documentElement
         
+        # 存储所有合约的行情数据
         items = {}
+        # 获取所有dailydata节点（每个节点代表一个合约的日行情数据）
         days = root.getElementsByTagName("dailydata")
         for day in days:
+            # 获取品种代码（如IF、IH、IC等）
             pid = day.getElementsByTagName(
                 "productid")[0].firstChild.data.strip()
 
+            # 只处理指定的品种：IF（沪深300）、IH（上证50）、IC（中证500）、T（10年期国债）、TF（5年期国债）、TS（2年期国债）
             if pid not in ["IF","IH","IC","T",'TF','TS']:
                 continue
 
+            # 创建每日行情数据对象
             item = DayData()
+            # 获取合约代码（如IF2103）
             item.code = day.getElementsByTagName("instrumentid")[
                 0].firstChild.data.strip()
+            # 设置品种代码
             item.pid = pid
+            # 获取持仓量（总持仓量）
             item.hold = float(day.getElementsByTagName(
                 "openinterest")[0].firstChild.data)
+            # 获取收盘价
             item.close = float(day.getElementsByTagName(
                 "closeprice")[0].firstChild.data)
+            # 获取成交量
             item.volume = int(day.getElementsByTagName(
                 "volume")[0].firstChild.data)
 
+            # 从合约代码中提取月份（去掉品种代码部分）
             item.month = item.code[len(item.pid):]
 
+            # 将合约行情数据存入字典，以合约代码为key
             items[item.code] = item
         return items
 
@@ -615,30 +774,57 @@ class WtMailNotifier:
                 logging.error("邮件发送失败，收件人：{}, {}".format(to, ex))
 
 class WtHotPicker:
-    '''
-    主力选择器
-    '''
+    """
+    主力合约选择器类
+    
+    用于自动识别和切换期货主力合约和次主力合约。支持从多个交易所获取行情数据，
+    根据成交量、持仓量等指标自动确定主力合约，并生成换月规则文件。
+    支持全量重构和增量更新两种模式。
+    """
     def __init__(self, markerFile:str = "./marker.json", hotFile:str = "../Common/hots.json", secFile:str = None):
+        """
+        初始化主力合约选择器
+        
+        @param markerFile: 标记文件路径，用于记录上次更新的日期
+        @param hotFile: 主力合约规则文件路径，存储主力合约切换规则
+        @param secFile: 次主力合约规则文件路径，存储次主力合约切换规则，如果为None则不处理次主力
+        """
+        # 标记文件路径，记录上次更新的日期
         self.marker_file = markerFile
+        # 主力合约规则文件路径
         self.hot_file = hotFile
+        # 次主力合约规则文件路径
         self.sec_file = secFile
 
+        # 邮件通知器，用于发送主力合约切换通知
         self.mail_notifier:WtMailNotifier = None
+        # 行情数据缓存监控器，用于获取每日行情数据
         self.cache_monitor:WtCacheMon = None
 
+        # 当前主力合约映射，格式：{交易所代码: {品种代码: 合约代码}}
         self.current_hots = None
+        # 当前次主力合约映射，格式：{交易所代码: {品种代码: 合约代码}}
         self.current_secs = None
 
     def set_cacher(self, cacher:WtCacheMon):
-        '''
+        """
         设置日行情缓存器
-        '''
+        
+        设置用于获取每日行情数据的缓存监控器，可以是WtCacheMonExchg（从交易所官网获取）
+        或WtCacheMonSS（从本地快照文件获取）。
+        
+        @param cacher: 行情数据缓存监控器对象
+        """
         self.cache_monitor = cacher
         
     def set_mail_notifier(self, notifier:WtMailNotifier):
-        '''
+        """
         设置邮件通知器
-        '''
+        
+        设置用于发送主力合约切换通知的邮件通知器。
+        
+        @param notifier: 邮件通知器对象
+        """
         self.mail_notifier = notifier
 
     def pick_exchg_hots(self, exchg:str, beginDT:datetime.datetime, endDT:datetime.datetime, alg:int = 0):

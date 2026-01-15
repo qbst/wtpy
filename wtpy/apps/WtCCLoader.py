@@ -1,8 +1,29 @@
-import urllib.request
-import io
-import gzip
+"""
+加密货币合约列表加载器模块
 
-import json
+本模块用于从各大加密货币交易所（如OKEX、Binance、FTX等）加载合约列表信息，
+并将合约信息转换为wtpy框架所需的格式，保存为JSON文件。
+
+主要功能：
+1. 从OKEX交易所加载合约列表（支持SPOT、SWAP、FUTURES等类型）
+2. 从Binance交易所加载现货、期货合约列表
+3. 从FTX交易所加载合约列表
+4. 将合约信息转换为wtpy标准格式，包括交易规则、价格精度等信息
+
+设计逻辑：
+- 通过HTTP请求从交易所API获取合约信息
+- 解析JSON响应，提取合约基本信息
+- 转换为wtpy标准格式，包括交易所代码、合约代码、交易规则等
+- 保存为JSON文件，便于后续使用
+"""
+
+# 导入标准库模块
+import urllib.request  # HTTP请求
+import io              # 输入输出流
+import gzip            # GZIP压缩解压
+
+# 导入第三方库
+import json            # JSON数据处理
 
 
 def httpGet(url, encoding:str='utf-8', proxy:str = None, headers:dict = {}) -> str:
@@ -46,6 +67,12 @@ def wrap_category(iType:str):
         return 24
 
 class WtCCLoader:
+    """
+    加密货币合约列表加载器类
+    
+    用于从各大加密货币交易所加载合约列表信息，并转换为wtpy框架所需的格式。
+    支持OKEX、Binance、FTX等主流交易所。
+    """
 
     @staticmethod
     def load_from_okex(filename:str, instTypes:list = ["SPOT"], proxy:str = None) -> bool:
